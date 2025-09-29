@@ -2,6 +2,9 @@
 .coverage
 .pytest_cache
 .env
+.env.local
+.env.prod
+.env.test
 .idea
 .tox
 .venv
@@ -24,3 +27,39 @@ pytest.xml
 # Ignore .pypirc
 .pypirc
 default.pypirc
+
+# Database files
+*.db
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# OS generated files
+Thumbs.db
+.DS_Store?
+ehthumbs.db
+Icon?
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# IDE files
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Docker volumes data
+pgdata/
+postgres_data/
+
+# Backup files
+*.bak
+*.backup
