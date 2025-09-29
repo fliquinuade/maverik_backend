@@ -1,0 +1,26 @@
+.DS_Store
+.coverage
+.pytest_cache
+.env
+.idea
+.tox
+.venv
+venv
+__pycache__
+build
+dist
+htmlcov
+package
+application.log
+*.egg-info
+**/*.py[cod]
+*.rpm
+*.ini
+*.zip
+pytest.xml
+.ruff_cache
+.vscode
+
+# Ignore .pypirc
+.pypirc
+default.pypirc

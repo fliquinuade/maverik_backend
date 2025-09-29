@@ -1,0 +1,54 @@
+[project]
+name = "maverik-backend"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.115.0",
+    "alembic>=1.13.3",
+    "sqlalchemy>=2.0.35",
+    "pydantic-settings>=2.5.2",
+    "pg8000>=1.31.2",
+    "ruff>=0.6.8",
+    "python-paseto>=0.5.2",
+    "email-validator>=2.2.0",
+    "uvicorn>=0.31.0",
+    "requests>=2.32.3",
+    "fastapi-utils>=0.7.0",
+    "typing-inspect>=0.9.0",
+    "mangum>=0.19.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+extend-select = [
+  # pycodestyle
+  "E",
+  # Pyflakes
+  "F",
+  # pyupgrade
+  "UP",
+  # flake8-bugbear
+  "B",
+  # flake8-simplify
+  "SIM",
+  # isort
+  "I",
+  "E501",   
+  "UP",  
+  "D102",
+  "D107"   
+]
+ignore = [
+  "UP032",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
