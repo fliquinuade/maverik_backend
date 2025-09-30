@@ -71,7 +71,17 @@ cp .env.example .env
 
 ### 3. Configuración de variables de entorno
 
-Edita el archivo `.env` con los siguientes valores:
+```bash
+# Copiar el archivo de ejemplo
+cp .env.example .env
+
+# Editar el archivo .env con tus configuraciones
+# Ver documentación detallada en docs/CONFIGURACION_ENV.md
+```
+
+**📖 Configuración detallada**: Ver [Guía de Configuración](docs/CONFIGURACION_ENV.md) para instrucciones completas.
+
+**Configuración básica** (editar en tu archivo `.env`):
 
 ```bash
 # Base de datos
@@ -81,19 +91,20 @@ DB_PASSWORD=tu_password_seguro
 DB_HOST=localhost  # usar 'db' para Docker Compose
 DB_PORT=5432
 
-# Servicios externos (URLs de tus servicios RAG y optimización)
-RAG_SERVICE_URL=http://tu-servicio-rag
-PORTFOLIO_OPTIMIZATION_URL=http://tu-servicio-portafolio
+# Servicios externos
+RAG_SERVICE_URL=http://localhost:8000
+FRONTEND_URL=http://localhost:5173
+PORTFOLIO_OPTIMIZATION_URL=  # opcional
 
-# Configuración de email
-SMTP_API_URL=tu_smtp_api_url
+# Email/SMTP
+SMTP_API_URL=https://api.example.com/send
 SMTP_API_KEY=tu_smtp_api_key
-MAIL_SENDER_NAME=Maverik App
-MAIL_SENDER_ADDRESS=noreply@tudominio.com
+MAIL_SENDER_NAME=Maverik Bot
+MAIL_SENDER_ADDRESS=no-reply@tudominio.com
 
-# Generar clave secreta:
-# python -c "import secrets; print(secrets.token_hex(32))"
-SECRET_KEY=tu_clave_secreta_de_64_caracteres
+# Seguridad (IMPORTANTE: cambiar en producción)
+SECRET_KEY=k4.local.doPhJGTf4E4lAtRrC8WKUmr18LwF6T_r-kI9D1C_J-k=
+APP_ENV=development
 ```
 
 ## 🚀 Ejecución
@@ -112,6 +123,20 @@ docker compose exec backend alembic upgrade head
 ```
 
 La API estará disponible en: http://localhost:8082
+
+**⚠️ Problemas con Docker?** Ver [Guía de Troubleshooting](docs/DOCKER_TROUBLESHOOTING.md)
+
+### Verificación rápida
+
+```bash
+# Probar script automático
+./scripts/test_docker.sh  # Linux/macOS
+scripts\test_docker.bat   # Windows
+
+# O probar manualmente
+curl http://localhost:8082/health
+curl http://localhost:8082/
+```
 
 ### Opción 2: Desarrollo Local
 
@@ -198,6 +223,7 @@ maverik_backend/
 Para documentación detallada sobre la arquitectura y funcionamiento del sistema, consulta:
 
 - [**Documentación del Proyecto**](docs/PROYECTO_MAVERIK_BACKEND.md) - Arquitectura completa, flujos de trabajo y consideraciones técnicas
+- [**Troubleshooting Docker**](docs/DOCKER_TROUBLESHOOTING.md) - Guía para resolver problemas comunes con Docker
 
 ## 🔧 Desarrollo
 
@@ -280,6 +306,82 @@ Ver [documentación técnica](docs/PROYECTO_MAVERIK_BACKEND.md) para lista de me
 - Mejorar manejo de errores
 - Agregar validaciones de autorización
 
+## 🐛 Troubleshooting
+
+### Problema: "Timeout conectando al servicio RAG"
+**Síntoma:** Error `HTTPConnectionPool(host='host.docker.internal', port=8000): Read timed out`
+
+**Solución:** El servicio RAG está tardando más del timeout configurado
+
+#### ⚡ Solución Rápida:
+```bash
+# Aumentar timeout en .env
+EXTERNAL_SERVICE_TIMEOUT=120  # 2 minutos
+
+# Reiniciar servicios
+docker compose down && docker compose up -d
+```
+
+#### 🔍 Diagnóstico:
+```bash
+# Verificar conectividad del RAG
+curl http://localhost:8082/debug/rag-connectivity
+
+# Medir performance del RAG  
+curl http://localhost:8082/debug/rag-performance
+
+# Ver logs del backend
+docker compose logs backend --tail 50
+```
+
+#### 📊 Endpoints de Monitoreo:
+- `GET /debug/rag-connectivity` - Prueba conectividad básica
+- `GET /debug/rag-performance` - Mide tiempo de respuesta y da recomendaciones
+- `GET /health` - Estado general del sistema
+
+#### 🔧 Configuración de Performance:
+
+**Para RAG rápido (< 30s):**
+```bash
+EXTERNAL_SERVICE_TIMEOUT=30
+```
+
+**Para RAG normal (30-60s):**
+```bash
+EXTERNAL_SERVICE_TIMEOUT=60  # Por defecto
+```
+
+**Para RAG lento (> 60s):**
+```bash
+EXTERNAL_SERVICE_TIMEOUT=120
+```
+
+#### 📚 Documentación Completa:
+Ver `docs/PERFORMANCE_RAG.md` para guía completa de optimización
+
+**Respuesta de Fallback:**
+Si el RAG no responde a tiempo, el sistema proporciona una respuesta útil al usuario en lugar de fallar, manteniendo la experiencia del usuario.
+
+### Otros Problemas Comunes
+
+**"ModuleNotFoundError: No module named 'maverik_backend'"**
+```bash
+docker compose down
+docker compose up --build -d
+```
+
+**Error de conexión a PostgreSQL**
+```bash
+# Ver puertos en uso
+netstat -ano | findstr 5433
+```
+
+**Variables de entorno no encontradas**
+```bash
+copy .env.example .env
+notepad .env  # Editar con tus valores
+```
+
 ---
 
 ## 📞 Soporte
@@ -288,4 +390,4 @@ Para soporte o consultas técnicas, revisar la documentación en `docs/` o crear
 
 ---
 
-⏰ Última actualización: 29 de septiembre de 2025
+⏰ Última actualización: 30 de septiembre de 2025

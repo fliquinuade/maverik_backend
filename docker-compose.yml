@@ -26,6 +26,9 @@ services:
       - "8082:8082"
     env_file:
       - .env
+    # Permitir acceso a servicios del host (para RAG en localhost)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy

@@ -87,7 +87,21 @@ def cargar_sesion_asesoria_detalles(db: Session, sesion_asesoria_id: int) -> lis
 
 
 def cargar_sesion_asesoria(db: Session, id: int) -> SesionAsesoria:
-    query = Query(SesionAsesoria).filter(SesionAsesoria.id == id)
+    """
+    Carga una sesión de asesoría con todas sus relaciones necesarias.
+    """
+    from sqlalchemy.orm import joinedload
+    
+    query = (
+        Query(SesionAsesoria)
+        .options(
+            joinedload(SesionAsesoria.usuario),
+            joinedload(SesionAsesoria.proposito_sesion),
+            joinedload(SesionAsesoria.objetivo),
+            joinedload(SesionAsesoria.tolerancia_al_riesgo)
+        )
+        .filter(SesionAsesoria.id == id)
+    )
     try:
         return query.with_session(db).one()
     except NoResultFound:
@@ -95,13 +109,23 @@ def cargar_sesion_asesoria(db: Session, id: int) -> SesionAsesoria:
 
 
 def obtener_perfil_riesgo(sesion_asesoria: SesionAsesoria) -> str:
+    """
+    Obtiene el perfil de riesgo de una sesión de asesoría.
+    Si no hay tolerancia al riesgo definida, retorna 'moderate' por defecto.
+    """
+    # Si no hay tolerancia al riesgo definida, usar valor por defecto
+    if not sesion_asesoria.tolerancia_al_riesgo:
+        return "moderate"
+    
     tolerancia_al_riesgo = {
         "baja": "conservative",
-        "media": "moderate",
+        "media": "moderate", 
         "alta": "bold",
     }
 
-    return tolerancia_al_riesgo[sesion_asesoria.tolerancia_al_riesgo.desc]
+    # Obtener la descripción de la tolerancia al riesgo
+    desc = sesion_asesoria.tolerancia_al_riesgo.desc
+    return tolerancia_al_riesgo.get(desc, "moderate")
 
 
 def preparar_user_profile(usuario: Usuario) -> str:
@@ -142,12 +166,21 @@ def preparar_user_profile(usuario: Usuario) -> str:
 
 
 def preparar_primer_input(sesion: SesionAsesoria) -> str:
+    """
+    Prepara el primer input para una sesión de asesoría.
+    Maneja casos donde algunos campos pueden ser None.
+    """
     proposito_sesion: models.PropositoSesion = sesion.proposito_sesion
     objetivo: models.Objetivo = sesion.objetivo
     tolerancia_al_riesgo: models.ToleranciaAlRiesgo = sesion.tolerancia_al_riesgo
 
     primer_input = "En esta oportunidad, vine a {}.".format(proposito_sesion.desc.lower())
+    
     if objetivo:
+        tolerancia_desc = "moderada"  # valor por defecto
+        if tolerancia_al_riesgo:
+            tolerancia_desc = tolerancia_al_riesgo.desc.lower()
+            
         primer_input += (
             " Quiero {}. "
             "Dispongo de un capital inicial de {:.2f}. "
@@ -155,9 +188,9 @@ def preparar_primer_input(sesion: SesionAsesoria) -> str:
             "Mi tolerancia al riesgo para lograr este objetivo es {}."
         ).format(
             objetivo.desc.lower(),
-            float(sesion.capital_inicial),
-            sesion.horizonte_temporal,
-            tolerancia_al_riesgo.desc.lower(),
+            float(sesion.capital_inicial) if sesion.capital_inicial else 0.0,
+            sesion.horizonte_temporal if sesion.horizonte_temporal else 12,
+            tolerancia_desc,
         )
 
     return primer_input
@@ -184,64 +217,115 @@ def enviar_chat_al_rag(
     valores: schemas.ChatCrear,
     app_config: Settings,
 ) -> schemas.RagServiceResponseMessage | None:
-    sesion_asesoria: SesionAsesoria = cargar_sesion_asesoria(db=db, id=valores.sesion_asesoria_id)
-    usuario: Usuario = sesion_asesoria.usuario
+    """
+    Envía un chat al servicio RAG con manejo robusto de errores.
+    """
+    try:
+        sesion_asesoria: SesionAsesoria = cargar_sesion_asesoria(db=db, id=valores.sesion_asesoria_id)
+        if not sesion_asesoria:
+            logging.error(f"No se encontró la sesión de asesoría con ID: {valores.sesion_asesoria_id}")
+            return None
+            
+        usuario: Usuario = sesion_asesoria.usuario
+        if not usuario:
+            logging.error(f"No se encontró el usuario para la sesión: {valores.sesion_asesoria_id}")
+            return None
 
-    user_profile = preparar_user_profile(usuario)
-    risk_profile = obtener_perfil_riesgo(sesion_asesoria)
+        user_profile = preparar_user_profile(usuario)
+        risk_profile = obtener_perfil_riesgo(sesion_asesoria)
 
-    # si el input=None quiere decir que es el primer input
-    # entonces se puede generar este input a partir de la informacion ya suministrada
-    if valores.input:
-        input = valores.input
-        detalles: list[SesionAsesoriaDetalle] = cargar_sesion_asesoria_detalles(
-            db=db,
-            sesion_asesoria_id=valores.sesion_asesoria_id,
+        # si el input=None quiere decir que es el primer input
+        # entonces se puede generar este input a partir de la informacion ya suministrada
+        if valores.input:
+            input = valores.input
+            detalles: list[SesionAsesoriaDetalle] = cargar_sesion_asesoria_detalles(
+                db=db,
+                sesion_asesoria_id=valores.sesion_asesoria_id,
+            )
+            chat_history = [(det.texto_usuario, det.texto_sistema) for det in detalles] if detalles else []
+        else:
+            input = preparar_primer_input(sesion=sesion_asesoria)
+            chat_history = []
+
+        mensaje_usuario = schemas.RagServiceRequestMessage(
+            userProfile=user_profile,
+            input=input,
+            chatHistory=chat_history,
         )
-        chat_history = [(det.texto_usuario, det.texto_sistema) for det in detalles]
-    else:
-        input = preparar_primer_input(sesion=sesion_asesoria)
-        chat_history = []
 
-    mensaje_usuario = schemas.RagServiceRequestMessage(
-        userProfile=user_profile,
-        input=input,
-        chatHistory=chat_history,
-    )
-
-    logging.info("enviando input al servicio RAG: %s ...", mensaje_usuario)
-    resp = requests.post(app_config.rag_service_url + "/api/chat", json=mensaje_usuario.dict())
-    logging.info(resp.status_code)
-    output = None
-    if resp.status_code == 200:
-        output = resp.json()["response"]
-        # if output and len(chat_history) == 0:
-        #     logging.info("enviando petición al servicio de optimización para obtener un portafolio ...")
-        #     url = app_config.portfolio_optimization_url + "/portfolio/generate/{}".format(risk_profile)
-        #     os_resp = requests.post(url)
-        #     if os_resp.status_code == 200:
-        #         portfolio = os_resp.json()
-        #         composicion_texto = ", ".join(
-        #             [
-        #                 "{} ({:.10f}%)".format(asset, portfolio["weights"][index])
-        #                 for index, asset in enumerate(portfolio["assets"])
-        #             ]
-        #         )
-        #         portfolio_texto = (
-        #             "    Además te traigo una información preliminar que puede ser de tu interés, "
-        #             "haciendo uso de un servicio de terceros pude obtener un portafolio "
-        #             "con una distribución interesante de acciones "
-        #             "para tener en cuenta como una idea de inversión. "
-        #             "El portafolio esta compuesto de la siguiente manera: {}"
-        #         ).format(composicion_texto)
-        #         output += portfolio_texto
-
-    if output:
-        return schemas.RagServiceResponseMessage(input=input, output=output)
-    else:
+        # URL del servicio RAG
+        rag_url = app_config.rag_service_url + "/api/chat"
+        logging.info(f"Enviando input al servicio RAG en {rag_url}: {mensaje_usuario}")
+        
+        # Realizar petición con timeout y manejo de errores
+        try:
+            # Usar timeout configurable desde settings
+            timeout_seconds = app_config.external_service_timeout
+            
+            logging.info(f"Enviando petición al RAG con timeout de {timeout_seconds}s...")
+            resp = requests.post(
+                rag_url, 
+                json=mensaje_usuario.dict(), 
+                timeout=timeout_seconds,
+                headers={"Content-Type": "application/json"}
+            )
+            logging.info(f"Respuesta del RAG: Status {resp.status_code}")
+            
+            if resp.status_code == 200:
+                try:
+                    response_data = resp.json()
+                    output = response_data.get("response")
+                    
+                    if output:
+                        logging.info(f"RAG respondió exitosamente. Output length: {len(output)}")
+                        return schemas.RagServiceResponseMessage(input=input, output=output)
+                    else:
+                        logging.error("RAG respondió pero sin campo 'response' en JSON")
+                        return None
+                        
+                except ValueError as e:
+                    logging.error(f"Error parseando JSON del RAG: {str(e)}")
+                    logging.error(f"Respuesta RAG: {resp.text[:500]}...")
+                    return None
+            else:
+                logging.error(f"RAG respondió con error {resp.status_code}: {resp.text[:500]}...")
+                return None
+                
+        except requests.exceptions.ConnectionError as e:
+            logging.error(f"Error de conexión al servicio RAG en {rag_url}: {str(e)}")
+            logging.error("Verifica que:")
+            logging.error("1. El servicio RAG esté ejecutándose")
+            logging.error("2. La URL sea correcta (usar host.docker.internal para Docker)")
+            logging.error("3. El puerto esté disponible")
+            return None
+            
+        except requests.exceptions.Timeout as e:
+            logging.error(f"Timeout conectando al servicio RAG después de {timeout_seconds}s: {str(e)}")
+            logging.error("El servicio RAG está tardando mucho en responder. Considera:")
+            logging.error("1. Optimizar el modelo RAG")
+            logging.error("2. Usar consultas más simples")
+            logging.error("3. Implementar cache de respuestas")
+            
+            # Retornar respuesta de fallback en lugar de None
+            fallback_response = (
+                "Disculpa, el servicio de análisis está experimentando demoras. "
+                "Mientras tanto, puedo sugerirte que para inversiones básicas consideres: "
+                "1) Fondos de inversión diversificados para principiantes, "
+                "2) Bonos del gobierno para inversiones conservadoras, "
+                "3) Educación financiera continua. "
+                "Por favor, intenta tu consulta nuevamente en unos momentos."
+            )
+            
+            logging.info("Devolviendo respuesta de fallback debido a timeout")
+            return schemas.RagServiceResponseMessage(input=input, output=fallback_response)
+            
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error en petición al RAG: {str(e)}")
+            return None
+            
+    except Exception as e:
+        logging.error(f"Error inesperado en enviar_chat_al_rag: {str(e)}")
         return None
-
-    # return schemas.RagServiceResponseMessage(input=input, output="me parece bien tu objetivo")
 
 
 def mantener_servicios_activos(urls: list[str]):
