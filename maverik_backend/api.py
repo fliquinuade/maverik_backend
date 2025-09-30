@@ -1,5 +1,6 @@
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Annotated
@@ -11,16 +12,19 @@ from sqlalchemy.orm import Session
 
 from maverik_backend.core import schemas, services, smtp
 from maverik_backend.core.database import get_sessionmaker
+from maverik_backend.core.simple_logging import (
+    log_request, 
+    log_rag_communication, 
+    log_business_event, 
+    log_auth_event, 
+    log_error,
+    RequestLogger
+)
 from maverik_backend.settings import Settings, load_config
 from maverik_backend.utils import auth
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s,%(msecs)d %(levelname)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
-
 app_config: Settings = load_config()
+
 send_email = partial(
     smtp.send_email_with_api,
     api_url=app_config.smtp_api_url,
@@ -47,6 +51,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -78,11 +83,39 @@ def raiz():
 @app.get("/health")
 def health_check():
     """Endpoint de health check para contenedores Docker y load balancers"""
-    return {
-        "status": "healthy", 
-        "service": "maverik_backend",
-        "version": "0.1.0"
-    }
+    import time
+    start_time = time.time()
+    
+    try:
+        response = {
+            "status": "healthy", 
+            "service": "maverik_backend",
+            "version": "0.1.0"
+        }
+        
+        # Calcular duración
+        duration_ms = (time.time() - start_time) * 1000
+        
+        # Log del health check
+        log_request(
+            method="GET",
+            endpoint="/health",
+            status_code=200,
+            duration_ms=duration_ms,
+            response_data=response
+        )
+        
+        return response
+    except Exception as e:
+        duration_ms = (time.time() - start_time) * 1000
+        log_request(
+            method="GET",
+            endpoint="/health", 
+            status_code=500,
+            duration_ms=duration_ms
+        )
+        log_error(f"Error en health check: {str(e)}", str(e))
+        raise
 
 
 @app.post("/user/signup", response_model=schemas.Usuario, tags=["user"])
@@ -90,43 +123,96 @@ async def crear_usuario(
     data: schemas.UsuarioCrearRequest,
     db: Annotated[Session, Depends(obtener_db)],
 ):
-    logging.info(data)
-    clave = secrets.token_urlsafe(20)
-    valores = schemas.UsuarioCrear(
-        email=data.email,
-        clave=clave,
-        fecha_nacimiento=data.fecha_nacimiento,
-        nivel_educativo_id=data.nivel_educativo_id,
-        conocimiento_alt_inversion_id=data.conocimiento_alt_inversion_id,
-        experiencia_invirtiendo_id=data.experiencia_invirtiendo_id,
-        porcentaje_ahorro_mensual_id=data.porcentaje_ahorro_mensual_id,
-        porcentaje_ahorro_invertir_id=data.porcentaje_ahorro_invertir_id,
-        tiempo_mantener_inversion_id=data.tiempo_mantener_inversion_id,
-        busca_invertir_en_id=data.busca_invertir_en_id,
-        proporcion_inversion_mantener_id=data.proporcion_inversion_mantener_id,
-    )
+    start_time = time.time()
+    
+    try:
+        # Log inicio de registro
+        log_business_event(
+            event_type="user_signup_start",
+            entity_type="user",
+            email=data.email
+        )
+        
+        logging.info(f"Iniciando registro de usuario: {data.email}")
+        
+        clave = secrets.token_urlsafe(20)
+        valores = schemas.UsuarioCrear(
+            email=data.email,
+            clave=clave,
+            fecha_nacimiento=data.fecha_nacimiento,
+            nivel_educativo_id=data.nivel_educativo_id,
+            conocimiento_alt_inversion_id=data.conocimiento_alt_inversion_id,
+            experiencia_invirtiendo_id=data.experiencia_invirtiendo_id,
+            porcentaje_ahorro_mensual_id=data.porcentaje_ahorro_mensual_id,
+            porcentaje_ahorro_invertir_id=data.porcentaje_ahorro_invertir_id,
+            tiempo_mantener_inversion_id=data.tiempo_mantener_inversion_id,
+            busca_invertir_en_id=data.busca_invertir_en_id,
+            proporcion_inversion_mantener_id=data.proporcion_inversion_mantener_id,
+        )
 
-    usuario = services.crear_usuario(db=db, valores=valores)
+        usuario = services.crear_usuario(db=db, valores=valores)
 
-    email_body = (
-        "Felicitaciones. Has creado tu cuenta en Maverik Copiloto.<br>"
-        "Tus datos para iniciar sesión son:<br/>"
-        "Usuario: {username}<br/>"
-        "Clave: {password}<br/>"
-        "Website: {weburl}"
-    ).format(
-        username=usuario.email,
-        password=usuario.clave,
-        weburl=app_config.frontend_url,
-    )
-    send_email(
-        to_email=usuario.email,
-        subject="Bienvenido a Maverik",
-        body=email_body,
-    )
-    print("clave={}".format(clave))
+        # Enviar email de bienvenida
+        email_body = (
+            "Felicitaciones. Has creado tu cuenta en Maverik Copiloto.<br>"
+            "Tus datos para iniciar sesión son:<br/>"
+            "Usuario: {username}<br/>"
+            "Clave: {password}<br/>"
+            "Website: {weburl}"
+        ).format(
+            username=usuario.email,
+            password=usuario.clave,
+            weburl=app_config.frontend_url,
+        )
+        
+        try:
+            send_email(
+                to_email=usuario.email,
+                subject="Bienvenido a Maverik",
+                body=email_body,
+            )
+            
+            log_business_event(
+                event_type="welcome_email_sent",
+                entity_type="user",
+                entity_id=usuario.id,
+                user_id=str(usuario.id),
+                email=usuario.email
+            )
+            
+        except Exception as email_error:
+            # Log error del email pero no fallar el registro
+            log_error(
+                email_error,
+                context="welcome_email_sending",
+                user_id=str(usuario.id),
+                email=usuario.email
+            )
+        
+        # Log registro exitoso
+        duration_ms = (time.time() - start_time) * 1000
+        log_business_event(
+            event_type="user_signup_success",
+            entity_type="user",
+            entity_id=usuario.id,
+            user_id=str(usuario.id),
+            email=usuario.email,
+            signup_duration_ms=round(duration_ms, 2)
+        )
+        
+        print("clave={}".format(clave))  # Para debugging en desarrollo
+        logging.info(f"Usuario {usuario.email} registrado exitosamente con ID: {usuario.id}")
 
-    return usuario
+        return usuario
+        
+    except Exception as e:
+        log_error(
+            e,
+            context="user_signup",
+            email=data.email,
+            nivel_educativo_id=data.nivel_educativo_id
+        )
+        raise HTTPException(status_code=500, detail="Error interno del servidor durante el registro")
 
 
 @app.post("/user/login", tags=["user"])
@@ -134,11 +220,58 @@ async def login_usuario(
     data: schemas.UsuarioLogin,
     db: Annotated[Session, Depends(obtener_db)],
 ):
-    usuario = services.verificar_usuario(db, data)
-    if usuario:
-        return auth.sign(user=usuario, key=secret_key)
-    else:
-        return {"error": "wrong credentials"}
+    start_time = time.time()
+    
+    try:
+        # Log intento de login
+        log_auth_event(
+            event_type="login_attempt",
+            success=True,
+            user_email=data.email
+        )
+        
+        usuario = services.verificar_usuario(db, data)
+        
+        if usuario:
+            # Login exitoso
+            token = auth.sign(user=usuario, key=secret_key)
+            
+            log_auth_event(
+                event_type="login_success",
+                success=True,
+                user_email=data.email,
+                user_id=str(usuario.id)
+            )
+            
+            duration_ms = (time.time() - start_time) * 1000
+            log_business_event(
+                event_type="user_login",
+                entity_type="user",
+                entity_id=usuario.id,
+                user_id=str(usuario.id),
+                email=data.email,
+                login_duration_ms=round(duration_ms, 2)
+            )
+            
+            return token
+        else:
+            # Login fallido
+            log_auth_event(
+                event_type="login_failure",
+                success=False,
+                user_email=data.email,
+                error="invalid_credentials"
+            )
+            
+            return {"error": "wrong credentials"}
+            
+    except Exception as e:
+        log_error(
+            e,
+            context="user_login",
+            email=data.email
+        )
+        raise HTTPException(status_code=500, detail="Error interno del servidor")
 
 
 @app.post("/copilot/sessions", response_model=schemas.SesionAsesoria, tags=["copilot"])
@@ -334,6 +467,9 @@ async def test_rag_connectivity():
     """
     Endpoint para probar la conectividad al servicio RAG.
     """
+    import time
+    start_time = time.time()
+    
     try:
         import requests
         
@@ -350,11 +486,31 @@ async def test_rag_connectivity():
         logging.info(f"Probando conectividad a RAG en: {test_url}")
         
         # Intentar conexión con timeout corto
+        rag_start_time = time.time()
         response = requests.post(
             test_url,
             json=test_data,
             timeout=10,
             headers={"Content-Type": "application/json"}
+        )
+        rag_duration = (time.time() - rag_start_time) * 1000
+        
+        # Log de comunicación RAG exitosa
+        log_rag_communication(
+            endpoint="/api/chat",
+            duration_ms=rag_duration,
+            success=True,
+            response_status=response.status_code,
+            test_mode=True
+        )
+        
+        duration_ms = (time.time() - start_time) * 1000
+        log_request(
+            method="GET",
+            endpoint="/debug/rag-connectivity",
+            status_code=200,
+            duration_ms=duration_ms,
+            rag_connectivity=True
         )
         
         return {
@@ -367,7 +523,28 @@ async def test_rag_connectivity():
             "message": "Conexión exitosa al servicio RAG"
         }
         
-    except requests.exceptions.ConnectionError as e:
+    except Exception as e:
+        rag_duration = (time.time() - start_time) * 1000
+        
+        # Log de comunicación RAG fallida (cualquier tipo de error)
+        log_rag_communication(
+            endpoint="/api/chat",
+            duration_ms=rag_duration,
+            success=False,
+            error=str(e),
+            error_type=type(e).__name__,
+            test_mode=True
+        )
+        
+        duration_ms = (time.time() - start_time) * 1000
+        log_request(
+            method="GET",
+            endpoint="/debug/rag-connectivity",
+            status_code=200,
+            duration_ms=duration_ms,
+            rag_connectivity=False
+        )
+        
         return {
             "rag_service_url": app_config.rag_service_url,
             "test_url": f"{app_config.rag_service_url}/api/chat",

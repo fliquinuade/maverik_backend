@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime
 
 import requests
@@ -7,44 +8,110 @@ from sqlalchemy.orm import Query, Session
 
 from maverik_backend.core import models, schemas
 from maverik_backend.core.models import SesionAsesoria, SesionAsesoriaDetalle, Usuario
+from maverik_backend.core.simple_logging import (
+    log_rag_communication,
+    log_business_event,
+    log_error
+)
 from maverik_backend.settings import Settings
 
 
 def crear_usuario(db: Session, valores: schemas.UsuarioCrear) -> Usuario:
-    usuario = Usuario(
-        email=valores.email,
-        clave=valores.clave,
-        fecha_nacimiento=valores.fecha_nacimiento,
-        nivel_educativo_id=valores.nivel_educativo_id,
-        conocimiento_alt_inversion_id=valores.conocimiento_alt_inversion_id,
-        experiencia_invirtiendo_id=valores.experiencia_invirtiendo_id,
-        porcentaje_ahorro_mensual_id=valores.porcentaje_ahorro_mensual_id,
-        porcentaje_ahorro_invertir_id=valores.porcentaje_ahorro_invertir_id,
-        tiempo_mantener_inversion_id=valores.tiempo_mantener_inversion_id,
-        busca_invertir_en_id=valores.busca_invertir_en_id,
-        proporcion_inversion_mantener_id=valores.proporcion_inversion_mantener_id,
-    )
-    db.add(usuario)
-    db.commit()
-    db.refresh(usuario)
+    try:
+        # Log inicio de creación
+        log_business_event(
+            event_type="user_creation_start",
+            entity_type="user",
+            email=valores.email,
+            fecha_nacimiento=str(valores.fecha_nacimiento),
+            nivel_educativo_id=valores.nivel_educativo_id
+        )
+        
+        usuario = Usuario(
+            email=valores.email,
+            clave=valores.clave,
+            fecha_nacimiento=valores.fecha_nacimiento,
+            nivel_educativo_id=valores.nivel_educativo_id,
+            conocimiento_alt_inversion_id=valores.conocimiento_alt_inversion_id,
+            experiencia_invirtiendo_id=valores.experiencia_invirtiendo_id,
+            porcentaje_ahorro_mensual_id=valores.porcentaje_ahorro_mensual_id,
+            porcentaje_ahorro_invertir_id=valores.porcentaje_ahorro_invertir_id,
+            tiempo_mantener_inversion_id=valores.tiempo_mantener_inversion_id,
+            busca_invertir_en_id=valores.busca_invertir_en_id,
+            proporcion_inversion_mantener_id=valores.proporcion_inversion_mantener_id,
+        )
+        db.add(usuario)
+        db.commit()
+        db.refresh(usuario)
 
-    return usuario
+        # Log creación exitosa
+        log_business_event(
+            event_type="user_creation_success",
+            entity_type="user",
+            entity_id=usuario.id,
+            email=usuario.email,
+            user_id=usuario.id
+        )
+
+        return usuario
+        
+    except Exception as e:
+        log_error(
+            e,
+            context="crear_usuario",
+            email=valores.email,
+            nivel_educativo_id=valores.nivel_educativo_id
+        )
+        raise
 
 
 def crear_sesion_asesoria(db: Session, valores: schemas.SesionAsesoriaCrear) -> SesionAsesoria:
-    sesion_asesoria = SesionAsesoria(
-        proposito_sesion_id=valores.proposito_sesion_id,
-        objetivo_id=valores.objetivo_id,
-        usuario_id=valores.usuario_id,
-        capital_inicial=valores.capital_inicial,
-        horizonte_temporal=valores.horizonte_temporal,
-        tolerancia_al_riesgo_id=valores.tolerancia_al_riesgo_id,
-    )
-    db.add(sesion_asesoria)
-    db.commit()
-    db.refresh(sesion_asesoria)
+    try:
+        # Log inicio de creación
+        log_business_event(
+            event_type="session_creation_start",
+            entity_type="session",
+            user_id=str(valores.usuario_id),
+            proposito_sesion_id=valores.proposito_sesion_id,
+            objetivo_id=valores.objetivo_id,
+            capital_inicial=float(valores.capital_inicial) if valores.capital_inicial else None,
+            horizonte_temporal=valores.horizonte_temporal,
+            tolerancia_al_riesgo_id=valores.tolerancia_al_riesgo_id
+        )
+        
+        sesion_asesoria = SesionAsesoria(
+            proposito_sesion_id=valores.proposito_sesion_id,
+            objetivo_id=valores.objetivo_id,
+            usuario_id=valores.usuario_id,
+            capital_inicial=valores.capital_inicial,
+            horizonte_temporal=valores.horizonte_temporal,
+            tolerancia_al_riesgo_id=valores.tolerancia_al_riesgo_id,
+        )
+        db.add(sesion_asesoria)
+        db.commit()
+        db.refresh(sesion_asesoria)
 
-    return sesion_asesoria
+        # Log creación exitosa
+        log_business_event(
+            event_type="session_creation_success",
+            entity_type="session",
+            entity_id=sesion_asesoria.id,
+            user_id=str(valores.usuario_id),
+            session_id=sesion_asesoria.id
+        )
+
+        return sesion_asesoria
+        
+    except Exception as e:
+        log_error(
+            e,
+            context="crear_sesion_asesoria",
+            user_id=str(valores.usuario_id),
+            proposito_sesion_id=valores.proposito_sesion_id,
+            objetivo_id=valores.objetivo_id,
+            tolerancia_al_riesgo_id=valores.tolerancia_al_riesgo_id
+        )
+        raise
 
 
 def crear_sesion_asesoria_detalle(
@@ -218,17 +285,40 @@ def enviar_chat_al_rag(
     app_config: Settings,
 ) -> schemas.RagServiceResponseMessage | None:
     """
-    Envía un chat al servicio RAG con manejo robusto de errores.
+    Envía un chat al servicio RAG con manejo robusto de errores y logging completo.
     """
+    # Información para logging
+    session_id = valores.sesion_asesoria_id
+    start_time = time.time()
+    rag_url = None
+    
     try:
+        # Log inicio de operación
+        log_business_event(
+            event_type="rag_communication_start",
+            entity_type="session",
+            session_id=session_id,
+            input_length=len(valores.input) if valores.input else 0
+        )
+        
         sesion_asesoria: SesionAsesoria = cargar_sesion_asesoria(db=db, id=valores.sesion_asesoria_id)
         if not sesion_asesoria:
-            logging.error(f"No se encontró la sesión de asesoría con ID: {valores.sesion_asesoria_id}")
+            error_msg = f"No se encontró la sesión de asesoría con ID: {valores.sesion_asesoria_id}"
+            log_error(
+                ValueError(error_msg),
+                context="enviar_chat_al_rag - session lookup",
+                session_id=session_id
+            )
             return None
             
         usuario: Usuario = sesion_asesoria.usuario
         if not usuario:
-            logging.error(f"No se encontró el usuario para la sesión: {valores.sesion_asesoria_id}")
+            error_msg = f"No se encontró el usuario para la sesión: {valores.sesion_asesoria_id}"
+            log_error(
+                ValueError(error_msg),
+                context="enviar_chat_al_rag - user lookup",
+                session_id=session_id
+            )
             return None
 
         user_profile = preparar_user_profile(usuario)
@@ -247,6 +337,7 @@ def enviar_chat_al_rag(
             input = preparar_primer_input(sesion=sesion_asesoria)
             chat_history = []
 
+        # Preparar mensaje para el RAG
         mensaje_usuario = schemas.RagServiceRequestMessage(
             userProfile=user_profile,
             input=input,
@@ -255,21 +346,26 @@ def enviar_chat_al_rag(
 
         # URL del servicio RAG
         rag_url = app_config.rag_service_url + "/api/chat"
-        logging.info(f"Enviando input al servicio RAG en {rag_url}: {mensaje_usuario}")
         
         # Realizar petición con timeout y manejo de errores
         try:
             # Usar timeout configurable desde settings
             timeout_seconds = app_config.external_service_timeout
             
-            logging.info(f"Enviando petición al RAG con timeout de {timeout_seconds}s...")
+            logging.info(f"Enviando petición al RAG con timeout de {timeout_seconds}s para sesión {session_id}")
+            
+            # Medir tiempo exacto de la comunicación con RAG
+            rag_start_time = time.time()
+            
             resp = requests.post(
                 rag_url, 
                 json=mensaje_usuario.dict(), 
                 timeout=timeout_seconds,
                 headers={"Content-Type": "application/json"}
             )
-            logging.info(f"Respuesta del RAG: Status {resp.status_code}")
+            
+            rag_end_time = time.time()
+            rag_duration_ms = (rag_end_time - rag_start_time) * 1000
             
             if resp.status_code == 200:
                 try:
@@ -277,34 +373,96 @@ def enviar_chat_al_rag(
                     output = response_data.get("response")
                     
                     if output:
-                        logging.info(f"RAG respondió exitosamente. Output length: {len(output)}")
+                        # Log comunicación exitosa
+                        log_rag_communication(
+                            endpoint="/api/chat",
+                            duration_ms=rag_duration_ms,
+                            success=True,
+                            session_id=session_id,
+                            status_code=resp.status_code,
+                            response_length=len(output)
+                        )
+                        
+                        log_business_event(
+                            event_type="rag_communication_success",
+                            entity_type="session",
+                            session_id=session_id,
+                            response_length=len(output),
+                            duration_ms=rag_duration_ms,
+                            chat_history_length=len(chat_history)
+                        )
+                        
                         return schemas.RagServiceResponseMessage(input=input, output=output)
                     else:
-                        logging.error("RAG respondió pero sin campo 'response' en JSON")
+                        error_msg = "RAG respondió pero sin campo 'response' en JSON"
+                        log_rag_communication(
+                            endpoint="/api/chat",
+                            duration_ms=rag_duration_ms,
+                            success=False,
+                            session_id=session_id,
+                            status_code=resp.status_code,
+                            error=error_msg
+                        )
                         return None
                         
                 except ValueError as e:
-                    logging.error(f"Error parseando JSON del RAG: {str(e)}")
-                    logging.error(f"Respuesta RAG: {resp.text[:500]}...")
+                    error_msg = f"Error parseando JSON del RAG: {str(e)}"
+                    log_rag_communication(
+                        endpoint="/api/chat",
+                        duration_ms=rag_duration_ms,
+                        success=False,
+                        session_id=session_id,
+                        status_code=resp.status_code,
+                        error=error_msg
+                    )
                     return None
             else:
-                logging.error(f"RAG respondió con error {resp.status_code}: {resp.text[:500]}...")
+                error_msg = f"RAG respondió con error {resp.status_code}"
+                log_rag_communication(
+                    endpoint="/api/chat",
+                    duration_ms=rag_duration_ms,
+                    success=False,
+                    session_id=session_id,
+                    status_code=resp.status_code,
+                    error=error_msg
+                )
                 return None
                 
         except requests.exceptions.ConnectionError as e:
-            logging.error(f"Error de conexión al servicio RAG en {rag_url}: {str(e)}")
-            logging.error("Verifica que:")
-            logging.error("1. El servicio RAG esté ejecutándose")
-            logging.error("2. La URL sea correcta (usar host.docker.internal para Docker)")
-            logging.error("3. El puerto esté disponible")
+            duration_ms = (time.time() - start_time) * 1000
+            error_msg = f"Error de conexión al servicio RAG: {str(e)}"
+            
+            log_rag_communication(
+                endpoint="/api/chat",
+                duration_ms=duration_ms,
+                success=False,
+                session_id=session_id,
+                error=error_msg
+            )
+            
+            log_error(
+                e,
+                context="RAG connection error",
+                session_id=session_id,
+                rag_url=rag_url
+            )
             return None
             
         except requests.exceptions.Timeout as e:
-            logging.error(f"Timeout conectando al servicio RAG después de {timeout_seconds}s: {str(e)}")
-            logging.error("El servicio RAG está tardando mucho en responder. Considera:")
-            logging.error("1. Optimizar el modelo RAG")
-            logging.error("2. Usar consultas más simples")
-            logging.error("3. Implementar cache de respuestas")
+            duration_ms = (time.time() - start_time) * 1000
+            error_msg = f"Timeout conectando al servicio RAG después de {timeout_seconds}s"
+            
+            log_rag_communication(
+                endpoint="/api/chat",
+                duration_ms=duration_ms,
+                success=False,
+                session_id=session_id,
+                error=f"{error_msg}: {str(e)}",
+                timeout_seconds=timeout_seconds
+            )
+            
+            # Log sugerencias para optimización
+            logging.warning(f"RAG timeout para sesión {session_id} - considerar optimizaciones")
             
             # Retornar respuesta de fallback en lugar de None
             fallback_response = (
@@ -316,15 +474,47 @@ def enviar_chat_al_rag(
                 "Por favor, intenta tu consulta nuevamente en unos momentos."
             )
             
-            logging.info("Devolviendo respuesta de fallback debido a timeout")
+            log_business_event(
+                event_type="rag_fallback_response",
+                entity_type="session",
+                session_id=session_id,
+                reason="timeout",
+                timeout_seconds=timeout_seconds,
+                fallback_response_length=len(fallback_response)
+            )
+            
             return schemas.RagServiceResponseMessage(input=input, output=fallback_response)
             
         except requests.exceptions.RequestException as e:
-            logging.error(f"Error en petición al RAG: {str(e)}")
+            duration_ms = (time.time() - start_time) * 1000
+            error_msg = f"Error en petición al RAG: {str(e)}"
+            
+            log_rag_communication(
+                endpoint="/api/chat",
+                duration_ms=duration_ms,
+                success=False,
+                session_id=session_id,
+                error=error_msg
+            )
+            
+            log_error(
+                e,
+                context="RAG request error",
+                session_id=session_id,
+                rag_url=rag_url
+            )
             return None
             
     except Exception as e:
-        logging.error(f"Error inesperado en enviar_chat_al_rag: {str(e)}")
+        duration_ms = (time.time() - start_time) * 1000
+        
+        log_error(
+            e,
+            context="enviar_chat_al_rag - unexpected error",
+            session_id=session_id,
+            rag_url=rag_url,
+            duration_ms=duration_ms
+        )
         return None
 
 

@@ -19,9 +19,10 @@ services:
     build:
       context: .
       dockerfile: ./deployments/backend.Dockerfile
-    # Montamos el código para hot-reload
+    # Montamos el código para hot-reload y logs para persistencia
     volumes:
       - .:/app
+      - ./logs:/app/logs  # Montar directorio de logs para persistencia
     ports:
       - "8082:8082"
     env_file:
